@@ -1211,7 +1211,7 @@ int testVector34(int ngen, bool testio=false) {
    double scale = 0.1 / std::numeric_limits<double>::epsilon();
    fsize = a.testWrite(v1,typeName);  iret |= a.check(name+" write",fsize,estSize,scale);
    ir = a.testRead(v1);   iret |= a.check(name+" read",ir,0);
-   s1 = a.testAddition(v1);       iret |= a.check(name+" after read",s1,sref1);
+   s1 = a.testAddition(v1);       iret |= a.check(name+" after read",s1,sref1,10);
 
    //std::cout << "File size = " << fsize << " estimated " << 8 * Dim * ngen << std::endl;
 
@@ -1267,7 +1267,12 @@ int testSVector(int ngen, bool testio=false) {
    double scale = 0.1 / std::numeric_limits<double>::epsilon();
    fsize = a.testWrite(v1,typeName);  iret |= a.check(name+" write",fsize,estSize,scale);
    ir = a.testRead(v1);   iret |= a.check(name+" read",ir,0);
-   s1 = a.testAdditionSV(v1);       iret |= a.check(name+" after read",s1,sref1);
+   s1 = a.testAdditionSV(v1);
+#if(defined __FAST_MATH__  && defined __clang__)
+   iret |= a.check(name+" after read",s1,sref1, 10);
+#else
+   iret |= a.check(name+" after read",s1,sref1);
+#endif
 
 
    return iret;

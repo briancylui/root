@@ -11,6 +11,7 @@
 #ifndef ROOT_TDFNODES
 #define ROOT_TDFNODES
 
+#include "ROOT/TypeTraits.hxx"
 #include "ROOT/TDFUtils.hxx"
 #include "ROOT/RArrayView.hxx"
 #include "ROOT/TSpinMutex.hxx"
@@ -18,83 +19,110 @@
 #include "TTreeReaderValue.h"
 
 #include <map>
-#include <numeric> // std::iota for TSlotStack
 #include <string>
 #include <tuple>
+#include <cassert>
 
 namespace ROOT {
 
 namespace Internal {
-class TDataFrameActionBase;
+namespace TDF {
+class TActionBase;
+}
 }
 
 namespace Detail {
+namespace TDF {
+using namespace ROOT::TypeTraits;
+namespace TDFInternal = ROOT::Internal::TDF;
 
-// forward declarations for TDataFrameImpl
-using ActionBasePtr_t = std::shared_ptr<ROOT::Internal::TDataFrameActionBase>;
+// forward declarations for TLoopManager
+using ActionBasePtr_t = std::shared_ptr<TDFInternal::TActionBase>;
 using ActionBaseVec_t = std::vector<ActionBasePtr_t>;
-class TDataFrameBranchBase;
-using TmpBranchBasePtr_t = std::shared_ptr<ROOT::Detail::TDataFrameBranchBase>;
-class TDataFrameFilterBase;
-using FilterBasePtr_t = std::shared_ptr<ROOT::Detail::TDataFrameFilterBase>;
+class TCustomColumnBase;
+using TmpBranchBasePtr_t = std::shared_ptr<TCustomColumnBase>;
+class TFilterBase;
+using FilterBasePtr_t = std::shared_ptr<TFilterBase>;
 using FilterBaseVec_t = std::vector<FilterBasePtr_t>;
-class TDataFrameRangeBase;
-using RangeBasePtr_t = std::shared_ptr<ROOT::Detail::TDataFrameRangeBase>;
+class TRangeBase;
+using RangeBasePtr_t = std::shared_ptr<TRangeBase>;
 using RangeBaseVec_t = std::vector<RangeBasePtr_t>;
 
-class TDataFrameImpl : public std::enable_shared_from_this<TDataFrameImpl> {
+class TLoopManager : public std::enable_shared_from_this<TLoopManager> {
 
-   ROOT::Detail::ActionBaseVec_t fBookedActions;
-   ROOT::Detail::FilterBaseVec_t fBookedFilters;
-   ROOT::Detail::FilterBaseVec_t fBookedNamedFilters;
+   enum class ELoopType { kROOTFiles, kNoFiles };
+
+   ActionBaseVec_t fBookedActions;
+   FilterBaseVec_t fBookedFilters;
+   FilterBaseVec_t fBookedNamedFilters;
    std::map<std::string, TmpBranchBasePtr_t> fBookedBranches;
-   ROOT::Detail::RangeBaseVec_t fBookedRanges;
+   RangeBaseVec_t fBookedRanges;
    std::vector<std::shared_ptr<bool>> fResProxyReadiness;
-   ::TDirectory *fDirPtr{nullptr};
-   TTree *fTree{nullptr};
-   const BranchNames_t fDefaultBranches;
-   const unsigned int fNSlots{0};
+   ::TDirectory *const fDirPtr{nullptr};
+   std::shared_ptr<TTree> fTree{nullptr}; //< Shared pointer to the input TTree/TChain. It does not own the pointee if
+                                          //the TTree/TChain was passed directly as an argument to TDataFrame's ctor (in
+                                          //which case we let users retain ownership).
+   const ColumnNames_t fDefaultColumns;
+   const ULong64_t fNEmptyEntries{0};
+   const unsigned int fNSlots{1};
    bool fHasRunAtLeastOnce{false};
    unsigned int fNChildren{0};      ///< Number of nodes of the functional graph hanging from this object
    unsigned int fNStopsReceived{0}; ///< Number of times that a children node signaled to stop processing entries.
+   const ELoopType fLoopType; ///< The kind of event loop that is going to be run (e.g. on ROOT files, on no files)
+   std::string fToJit;        ///< string containing all `BuildAndBook` actions that should be jitted before running
+
+   void RunEmptySourceMT();
+   void RunEmptySource();
+   void RunTreeProcessorMT();
+   void RunTreeReader();
+   void RunAndCheckFilters(unsigned int slot, Long64_t entry);
+   void InitNodeSlots(TTreeReader *r, unsigned int slot);
+   void InitNodes();
+   void CleanUp();
+   void JitActions();
+   void EvalChildrenCounts();
 
 public:
-   TDataFrameImpl(TTree *tree, const BranchNames_t &defaultBranches);
-   TDataFrameImpl(const TDataFrameImpl &) = delete;
-   ~TDataFrameImpl(){};
+   TLoopManager(TTree *tree, const ColumnNames_t &defaultBranches);
+   TLoopManager(ULong64_t nEmptyEntries);
+   TLoopManager(const TLoopManager &) = delete;
+   TLoopManager &operator=(const TLoopManager &) = delete;
+
    void Run();
-   void BuildAllReaderValues(TTreeReader &r, unsigned int slot);
-   void CreateSlots(unsigned int nSlots);
-   TDataFrameImpl *GetImplPtr();
-   std::shared_ptr<TDataFrameImpl> GetSharedPtr() { return shared_from_this(); }
-   const BranchNames_t &GetDefaultBranches() const;
-   const BranchNames_t GetTmpBranches() const { return {}; };
+   TLoopManager *GetImplPtr();
+   std::shared_ptr<TLoopManager> GetSharedPtr() { return shared_from_this(); }
+   const ColumnNames_t &GetDefaultColumnNames() const;
+   const ColumnNames_t GetTmpBranches() const { return {}; };
    TTree *GetTree() const;
-   TDataFrameBranchBase *GetBookedBranch(const std::string &name) const;
+   TCustomColumnBase *GetBookedBranch(const std::string &name) const;
    const std::map<std::string, TmpBranchBasePtr_t> &GetBookedBranches() const { return fBookedBranches; }
    ::TDirectory *GetDirectory() const;
-   std::string GetTreeName() const;
+   ULong64_t GetNEmptyEntries() const { return fNEmptyEntries; }
    void Book(const ActionBasePtr_t &actionPtr);
-   void Book(const ROOT::Detail::FilterBasePtr_t &filterPtr);
-   void Book(const ROOT::Detail::TmpBranchBasePtr_t &branchPtr);
+   void Book(const FilterBasePtr_t &filterPtr);
+   void Book(const TmpBranchBasePtr_t &branchPtr);
    void Book(const std::shared_ptr<bool> &branchPtr);
-   void Book(const ROOT::Detail::RangeBasePtr_t &rangePtr);
+   void Book(const RangeBasePtr_t &rangePtr);
    bool CheckFilters(int, unsigned int);
-   unsigned int GetNSlots() const;
+   unsigned int GetNSlots() const { return fNSlots; }
    bool HasRunAtLeastOnce() const { return fHasRunAtLeastOnce; }
    void Report() const;
    /// End of recursive chain of calls, does nothing
    void PartialReport() const {}
-   void SetTree(TTree *tree) { fTree = tree; }
+   void SetTree(const std::shared_ptr<TTree> &tree) { fTree = tree; }
    void IncrChildrenCount() { ++fNChildren; }
    void StopProcessing() { ++fNStopsReceived; }
+   void Jit(const std::string &s) { fToJit.append(s); }
 };
-}
+} // end ns TDF
+} // end ns Detail
 
 namespace Internal {
+namespace TDF {
+using namespace ROOT::Detail::TDF;
 
 /**
-\class ROOT::Experimental::TDataFrameValue
+\class ROOT::Internal::TDF::TColumnValue
 \ingroup dataframe
 \brief Helper class that updates and returns TTree branches as well as TDataFrame temporary columns
 \tparam T The type of the column
@@ -105,49 +133,47 @@ temporary columns whose values are generated on the fly. While the type of the
 value is known at compile time (or just-in-time), it is only at runtime that nodes
 can check whether a certain value is generated on the fly or not.
 
-TDataFrameValuePtr abstracts this difference by providing the same interface for
+TColumnValuePtr abstracts this difference by providing the same interface for
 both cases and handling the reading or generation of new values transparently.
 Only one of the two data members fReaderProxy or fValuePtr will be non-null
-for a given TDataFrameValue, depending on whether the value comes from a real
+for a given TColumnValue, depending on whether the value comes from a real
 TTree branch or from a temporary column respectively.
 
-TDataFrame nodes can store tuples of TDataFrameValues and retrieve an updated
+TDataFrame nodes can store tuples of TColumnValues and retrieve an updated
 value for the column via the `Get` method.
 **/
 template <typename T>
-class TDataFrameValue {
+class TColumnValue {
    // following line is equivalent to pseudo-code: ProxyParam_t == array_view<U> ? U : T
    // ReaderValueOrArray_t is a TTreeReaderValue<T> unless T is array_view<U>
    using ProxyParam_t = typename std::conditional<std::is_same<ReaderValueOrArray_t<T>, TTreeReaderValue<T>>::value, T,
-                                                  TDFTraitsUtils::ExtractType_t<T>>::type;
+                                                  TakeFirstParameter_t<T>>::type;
    std::unique_ptr<TTreeReaderValue<T>> fReaderValue{nullptr}; //< Owning ptr to a TTreeReaderValue. Used for
                                                                /// non-temporary columns and T != std::array_view<U>
    std::unique_ptr<TTreeReaderArray<ProxyParam_t>> fReaderArray{nullptr}; //< Owning ptr to a TTreeReaderArray. Used for
                                                                           /// non-temporary columsn and
                                                                           /// T == std::array_view<U>.
-   T *fValuePtr{nullptr}; //< Non-owning ptr to the value of a temporary column.
-   ROOT::Detail::TDataFrameBranchBase *fTmpColumn{
-      nullptr};           //< Non-owning ptr to the node responsible for the temporary column.
+   T *fValuePtr{nullptr};                  //< Non-owning ptr to the value of a temporary column.
+   TCustomColumnBase *fTmpColumn{nullptr}; //< Non-owning ptr to the node responsible for the temporary column.
    unsigned int fSlot{0}; //< The slot this value belongs to. Only used for temporary columns, not for real branches.
 
 public:
-   TDataFrameValue() = default;
+   TColumnValue() = default;
 
-   void SetTmpColumn(unsigned int slot, ROOT::Detail::TDataFrameBranchBase *tmpColumn);
+   void SetTmpColumn(unsigned int slot, TCustomColumnBase *tmpColumn);
 
-   void MakeProxy(TTreeReader &r, const std::string &bn)
+   void MakeProxy(TTreeReader *r, const std::string &bn)
    {
       Reset();
       bool useReaderValue = std::is_same<ProxyParam_t, T>::value;
       if (useReaderValue)
-         fReaderValue.reset(new TTreeReaderValue<T>(r, bn.c_str()));
+         fReaderValue.reset(new TTreeReaderValue<T>(*r, bn.c_str()));
       else
-         fReaderArray.reset(new TTreeReaderArray<ProxyParam_t>(r, bn.c_str()));
+         fReaderArray.reset(new TTreeReaderArray<ProxyParam_t>(*r, bn.c_str()));
    }
 
    template <typename U = T,
-             typename std::enable_if<std::is_same<typename ROOT::Internal::TDataFrameValue<U>::ProxyParam_t, U>::value,
-                                     int>::type = 0>
+             typename std::enable_if<std::is_same<typename TColumnValue<U>::ProxyParam_t, U>::value, int>::type = 0>
    T &Get(Long64_t entry);
 
    template <typename U = T, typename std::enable_if<!std::is_same<ProxyParam_t, U>::value, int>::type = 0>
@@ -159,7 +185,7 @@ public:
          exceptionText += fReaderArray->GetBranchName();
          exceptionText += " hangs from a non-split branch. For this reason, it cannot be accessed via an array_view."
                           " Please read the top level branch instead.";
-         throw std::runtime_error(exceptionText.c_str());
+         throw std::runtime_error(exceptionText);
       }
 
       return std::array_view<ProxyParam_t>(fReaderArray->begin(), fReaderArray->end());
@@ -180,128 +206,151 @@ struct TTDFValueTuple {
 };
 
 template <typename... BranchTypes>
-struct TTDFValueTuple<ROOT::Internal::TDFTraitsUtils::TTypeList<BranchTypes...>> {
-   using type = std::tuple<ROOT::Internal::TDataFrameValue<BranchTypes>...>;
+struct TTDFValueTuple<TypeList<BranchTypes...>> {
+   using type = std::tuple<TColumnValue<BranchTypes>...>;
 };
 
 template <typename BranchType>
 using TDFValueTuple_t = typename TTDFValueTuple<BranchType>::type;
 
-class TDataFrameActionBase {
+class TActionBase {
 protected:
-   ROOT::Detail::TDataFrameImpl *fImplPtr; ///< A raw pointer to the TDataFrameImpl at the root of this functional
-                                           /// graph. It is only guaranteed to contain a valid address during an event
-                                           /// loop.
-   const BranchNames_t fTmpBranches;
+   TLoopManager *fImplPtr; ///< A raw pointer to the TLoopManager at the root of this functional
+                           /// graph. It is only guaranteed to contain a valid address during an
+                           /// event loop.
+   const ColumnNames_t fTmpBranches;
+   const unsigned int fNSlots; ///< Number of thread slots used by this node.
 
 public:
-   TDataFrameActionBase(ROOT::Detail::TDataFrameImpl *implPtr, const BranchNames_t &tmpBranches);
-   virtual ~TDataFrameActionBase() {}
+   TActionBase(TLoopManager *implPtr, const ColumnNames_t &tmpBranches, const unsigned int nSlots);
+   TActionBase(const TActionBase &) = delete;
+   TActionBase &operator=(const TActionBase &) = delete;
+   virtual ~TActionBase() = default;
+
    virtual void Run(unsigned int slot, Long64_t entry) = 0;
-   virtual void BuildReaderValues(TTreeReader &r, unsigned int slot) = 0;
-   virtual void CreateSlots(unsigned int nSlots) = 0;
+   virtual void InitSlot(TTreeReader *r, unsigned int slot) = 0;
+   virtual void TriggerChildrenCount() = 0;
+   unsigned int GetNSlots() const { return fNSlots; }
 };
 
 template <typename Helper, typename PrevDataFrame, typename BranchTypes_t = typename Helper::BranchTypes_t>
-class TDataFrameAction final : public TDataFrameActionBase {
-   using TypeInd_t = typename TDFTraitsUtils::TGenStaticSeq<BranchTypes_t::fgSize>::Type_t;
+class TAction final : public TActionBase {
+   using TypeInd_t = TDFInternal::GenStaticSeq_t<BranchTypes_t::list_size>;
 
    Helper fHelper;
-   const BranchNames_t fBranches;
+   const ColumnNames_t fBranches;
    PrevDataFrame &fPrevData;
-   std::vector<ROOT::Internal::TDFValueTuple_t<BranchTypes_t>> fValues;
+   std::vector<TDFValueTuple_t<BranchTypes_t>> fValues;
 
 public:
-   TDataFrameAction(Helper &&h, const BranchNames_t &bl, PrevDataFrame &pd)
-      : TDataFrameActionBase(pd.GetImplPtr(), pd.GetTmpBranches()), fHelper(std::move(h)), fBranches(bl), fPrevData(pd)
+   TAction(Helper &&h, const ColumnNames_t &bl, PrevDataFrame &pd)
+      : TActionBase(pd.GetImplPtr(), pd.GetTmpBranches(), pd.GetNSlots()), fHelper(std::move(h)), fBranches(bl),
+        fPrevData(pd), fValues(fNSlots)
    {
    }
 
-   TDataFrameAction(const TDataFrameAction &) = delete;
+   TAction(const TAction &) = delete;
+   TActionBase &operator=(const TActionBase &) = delete;
 
-   void CreateSlots(unsigned int nSlots) final { fValues.resize(nSlots); }
-
-   void BuildReaderValues(TTreeReader &r, unsigned int slot) final
+   void InitSlot(TTreeReader *r, unsigned int slot) final
    {
-      ROOT::Internal::InitTDFValues(slot, fValues[slot], r, fBranches, fTmpBranches, fImplPtr->GetBookedBranches(),
-                                    BranchTypes_t(), TypeInd_t());
+      InitTDFValues(slot, fValues[slot], r, fBranches, fTmpBranches, fImplPtr->GetBookedBranches(), TypeInd_t());
+      fHelper.InitSlot(r, slot);
    }
 
    void Run(unsigned int slot, Long64_t entry) final
    {
       // check if entry passes all filters
-      if (fPrevData.CheckFilters(slot, entry)) Exec(slot, entry, TypeInd_t());
+      if (fPrevData.CheckFilters(slot, entry))
+         Exec(slot, entry, TypeInd_t());
    }
 
    template <int... S>
-   void Exec(unsigned int slot, Long64_t entry, TDFTraitsUtils::TStaticSeq<S...>)
+   void Exec(unsigned int slot, Long64_t entry, TDFInternal::StaticSeq<S...>)
    {
       (void)entry; // avoid bogus 'unused parameter' warning in gcc4.9
       fHelper.Exec(slot, std::get<S>(fValues[slot]).Get(entry)...);
    }
 
-   ~TDataFrameAction() { fHelper.Finalize(); }
+   void TriggerChildrenCount() final { fPrevData.IncrChildrenCount(); }
+
+   ~TAction() { fHelper.Finalize(); }
 };
 
+} // end NS TDF
 } // end NS Internal
 
 namespace Detail {
+namespace TDF {
 
-class TDataFrameBranchBase {
+class TCustomColumnBase {
 protected:
-   TDataFrameImpl *fImplPtr; ///< A raw pointer to the TDataFrameImpl at the root of this functional graph. It is only
-                             /// guaranteed to contain a valid address during an event loop.
-   BranchNames_t fTmpBranches;
+   TLoopManager *fImplPtr; ///< A raw pointer to the TLoopManager at the root of this functional graph. It is only
+                           /// guaranteed to contain a valid address during an event loop.
+   ColumnNames_t fTmpBranches;
    const std::string fName;
    unsigned int fNChildren{0};      ///< Number of nodes of the functional graph hanging from this object
    unsigned int fNStopsReceived{0}; ///< Number of times that a children node signaled to stop processing entries.
+   const unsigned int fNSlots;      ///< Number of thread slots used by this node, inherited from parent node.
 
 public:
-   TDataFrameBranchBase(TDataFrameImpl *df, const BranchNames_t &tmpBranches, const std::string &name);
-   virtual ~TDataFrameBranchBase() {}
-   virtual void BuildReaderValues(TTreeReader &r, unsigned int slot) = 0;
-   virtual void CreateSlots(unsigned int nSlots) = 0;
+   TCustomColumnBase(TLoopManager *df, const ColumnNames_t &tmpBranches, std::string_view name,
+                     const unsigned int nSlots);
+   TCustomColumnBase &operator=(const TCustomColumnBase &) = delete;
+   virtual ~TCustomColumnBase() = default;
+
+   virtual void InitSlot(TTreeReader *r, unsigned int slot) = 0;
    virtual void *GetValuePtr(unsigned int slot) = 0;
    virtual const std::type_info &GetTypeId() const = 0;
    virtual bool CheckFilters(unsigned int slot, Long64_t entry) = 0;
-   TDataFrameImpl *GetImplPtr() const;
+   TLoopManager *GetImplPtr() const;
    virtual void Report() const = 0;
    virtual void PartialReport() const = 0;
    std::string GetName() const;
-   BranchNames_t GetTmpBranches() const;
+   ColumnNames_t GetTmpBranches() const;
    virtual void Update(unsigned int slot, Long64_t entry) = 0;
-   void IncrChildrenCount() { ++fNChildren; }
+   virtual void IncrChildrenCount() = 0;
    virtual void StopProcessing() = 0;
+   void ResetChildrenCount()
+   {
+      fNChildren = 0;
+      fNStopsReceived = 0;
+   }
+   unsigned int GetNSlots() const { return fNSlots; }
 };
 
 template <typename F, typename PrevData>
-class TDataFrameBranch final : public TDataFrameBranchBase {
-   using BranchTypes_t = typename ROOT::Internal::TDFTraitsUtils::TFunctionTraits<F>::Args_t;
-   using TypeInd_t = typename ROOT::Internal::TDFTraitsUtils::TGenStaticSeq<BranchTypes_t::fgSize>::Type_t;
-   using Ret_t = typename ROOT::Internal::TDFTraitsUtils::TFunctionTraits<F>::Ret_t;
+class TCustomColumn final : public TCustomColumnBase {
+   using BranchTypes_t = typename CallableTraits<F>::arg_types;
+   using TypeInd_t = TDFInternal::GenStaticSeq_t<BranchTypes_t::list_size>;
+   using ret_type = typename CallableTraits<F>::ret_type;
 
    F fExpression;
-   const BranchNames_t fBranches;
-   std::vector<std::unique_ptr<Ret_t>> fLastResultPtr;
+   const ColumnNames_t fBranches;
+   std::vector<std::unique_ptr<ret_type>> fLastResultPtr;
    PrevData &fPrevData;
    std::vector<Long64_t> fLastCheckedEntry = {-1};
 
-   std::vector<ROOT::Internal::TDFValueTuple_t<BranchTypes_t>> fValues;
+   std::vector<TDFInternal::TDFValueTuple_t<BranchTypes_t>> fValues;
 
 public:
-   TDataFrameBranch(const std::string &name, F &&expression, const BranchNames_t &bl, PrevData &pd)
-      : TDataFrameBranchBase(pd.GetImplPtr(), pd.GetTmpBranches(), name), fExpression(std::move(expression)),
-        fBranches(bl), fPrevData(pd)
+   TCustomColumn(std::string_view name, F &&expression, const ColumnNames_t &bl, PrevData &pd)
+      : TCustomColumnBase(pd.GetImplPtr(), pd.GetTmpBranches(), name, pd.GetNSlots()),
+        fExpression(std::move(expression)), fBranches(bl), fLastResultPtr(fNSlots), fPrevData(pd),
+        fLastCheckedEntry(fNSlots, -1), fValues(fNSlots)
    {
+      std::generate(fLastResultPtr.begin(), fLastResultPtr.end(),
+                    []() { return std::unique_ptr<ret_type>(new ret_type()); });
       fTmpBranches.emplace_back(name);
    }
 
-   TDataFrameBranch(const TDataFrameBranch &) = delete;
+   TCustomColumn(const TCustomColumn &) = delete;
+   TCustomColumn &operator=(const TCustomColumn &) = delete;
 
-   void BuildReaderValues(TTreeReader &r, unsigned int slot) final
+   void InitSlot(TTreeReader *r, unsigned int slot) final
    {
-      ROOT::Internal::InitTDFValues(slot, fValues[slot], r, fBranches, fTmpBranches, fImplPtr->GetBookedBranches(),
-                                    BranchTypes_t(), TypeInd_t());
+      TDFInternal::InitTDFValues(slot, fValues[slot], r, fBranches, fTmpBranches, fImplPtr->GetBookedBranches(),
+                                 TypeInd_t());
    }
 
    void *GetValuePtr(unsigned int slot) final { return static_cast<void *>(fLastResultPtr[slot].get()); }
@@ -315,15 +364,7 @@ public:
       }
    }
 
-   const std::type_info &GetTypeId() const { return typeid(Ret_t); }
-
-   void CreateSlots(unsigned int nSlots) final
-   {
-      fValues.resize(nSlots);
-      fLastCheckedEntry.resize(nSlots, -1);
-      fLastResultPtr.resize(nSlots);
-      std::generate(fLastResultPtr.begin(), fLastResultPtr.end(), []() { return std::unique_ptr<Ret_t>(new Ret_t()); });
-   }
+   const std::type_info &GetTypeId() const { return typeid(ret_type); }
 
    bool CheckFilters(unsigned int slot, Long64_t entry) final
    {
@@ -332,14 +373,16 @@ public:
    }
 
    template <int... S, typename... BranchTypes>
-   void UpdateHelper(unsigned int slot, Long64_t entry, ROOT::Internal::TDFTraitsUtils::TStaticSeq<S...>,
-                     ROOT::Internal::TDFTraitsUtils::TTypeList<BranchTypes...>)
+   void UpdateHelper(unsigned int slot, Long64_t entry, TDFInternal::StaticSeq<S...>, TypeList<BranchTypes...>)
    {
       *fLastResultPtr[slot] = fExpression(std::get<S>(fValues[slot]).Get(entry)...);
+      // silence "unused parameter" warnings in gcc
+      (void)slot;
+      (void)entry;
    }
 
    // recursive chain of `Report`s
-   // TDataFrameBranch simply forwards the call to the previous node
+   // TCustomColumn simply forwards the call to the previous node
    void Report() const final { fPrevData.PartialReport(); }
 
    void PartialReport() const final { fPrevData.PartialReport(); }
@@ -347,15 +390,24 @@ public:
    void StopProcessing()
    {
       ++fNStopsReceived;
-      if (fNStopsReceived == fNChildren) fPrevData.StopProcessing();
+      if (fNStopsReceived == fNChildren)
+         fPrevData.StopProcessing();
+   }
+
+   void IncrChildrenCount()
+   {
+      ++fNChildren;
+      // propagate "children activation" upstream
+      if (fNChildren == 1)
+         fPrevData.IncrChildrenCount();
    }
 };
 
-class TDataFrameFilterBase {
+class TFilterBase {
 protected:
-   TDataFrameImpl *fImplPtr; ///< A raw pointer to the TDataFrameImpl at the root of this functional graph. It is only
-                             /// guaranteed to contain a valid address during an event loop.
-   const BranchNames_t fTmpBranches;
+   TLoopManager *fImplPtr; ///< A raw pointer to the TLoopManager at the root of this functional graph. It is only
+                           /// guaranteed to contain a valid address during an event loop.
+   const ColumnNames_t fTmpBranches;
    std::vector<Long64_t> fLastCheckedEntry = {-1};
    std::vector<int> fLastResult = {true}; // std::vector<bool> cannot be used in a MT context safely
    std::vector<ULong64_t> fAccepted = {0};
@@ -363,54 +415,52 @@ protected:
    const std::string fName;
    unsigned int fNChildren{0};      ///< Number of nodes of the functional graph hanging from this object
    unsigned int fNStopsReceived{0}; ///< Number of times that a children node signaled to stop processing entries.
+   const unsigned int fNSlots;      ///< Number of thread slots used by this node, inherited from parent node.
 
 public:
-   TDataFrameFilterBase(TDataFrameImpl *df, const BranchNames_t &tmpBranches, const std::string &name);
-   virtual ~TDataFrameFilterBase() {}
-   virtual void BuildReaderValues(TTreeReader &r, unsigned int slot) = 0;
+   TFilterBase(TLoopManager *df, const ColumnNames_t &tmpBranches, std::string_view name, const unsigned int nSlots);
+   TFilterBase &operator=(const TFilterBase &) = delete;
+   virtual ~TFilterBase() = default;
+
+   virtual void InitSlot(TTreeReader *r, unsigned int slot) = 0;
    virtual bool CheckFilters(unsigned int slot, Long64_t entry) = 0;
    virtual void Report() const = 0;
    virtual void PartialReport() const = 0;
-   TDataFrameImpl *GetImplPtr() const;
-   BranchNames_t GetTmpBranches() const;
+   TLoopManager *GetImplPtr() const;
+   ColumnNames_t GetTmpBranches() const;
    bool HasName() const;
-   virtual void CreateSlots(unsigned int nSlots) = 0;
    void PrintReport() const;
-   void IncrChildrenCount() { ++fNChildren; }
+   virtual void IncrChildrenCount() = 0;
    virtual void StopProcessing() = 0;
+   void ResetChildrenCount()
+   {
+      fNChildren = 0;
+      fNStopsReceived = 0;
+   }
+   virtual void TriggerChildrenCount() = 0;
+   unsigned int GetNSlots() const { return fNSlots; }
+   virtual void ResetReportCount() = 0;
 };
 
 template <typename FilterF, typename PrevDataFrame>
-class TDataFrameFilter final : public TDataFrameFilterBase {
-   using BranchTypes_t = typename ROOT::Internal::TDFTraitsUtils::TFunctionTraits<FilterF>::Args_t;
-   using TypeInd_t = typename ROOT::Internal::TDFTraitsUtils::TGenStaticSeq<BranchTypes_t::fgSize>::Type_t;
+class TFilter final : public TFilterBase {
+   using BranchTypes_t = typename CallableTraits<FilterF>::arg_types;
+   using TypeInd_t = TDFInternal::GenStaticSeq_t<BranchTypes_t::list_size>;
 
    FilterF fFilter;
-   const BranchNames_t fBranches;
+   const ColumnNames_t fBranches;
    PrevDataFrame &fPrevData;
-   std::vector<ROOT::Internal::TDFValueTuple_t<BranchTypes_t>> fValues;
+   std::vector<TDFInternal::TDFValueTuple_t<BranchTypes_t>> fValues;
 
 public:
-   TDataFrameFilter(FilterF &&f, const BranchNames_t &bl, PrevDataFrame &pd, const std::string &name = "")
-      : TDataFrameFilterBase(pd.GetImplPtr(), pd.GetTmpBranches(), name), fFilter(std::move(f)), fBranches(bl),
-        fPrevData(pd)
+   TFilter(FilterF &&f, const ColumnNames_t &bl, PrevDataFrame &pd, std::string_view name = "")
+      : TFilterBase(pd.GetImplPtr(), pd.GetTmpBranches(), name, pd.GetNSlots()), fFilter(std::move(f)), fBranches(bl),
+        fPrevData(pd), fValues(fNSlots)
    {
    }
 
-   TDataFrameFilter(const TDataFrameFilter &) = delete;
-
-   void CreateSlots(unsigned int nSlots)
-   {
-      fValues.resize(nSlots);
-      fLastCheckedEntry.resize(nSlots, -1);
-      fLastResult.resize(nSlots);
-      fAccepted.resize(nSlots);
-      fRejected.resize(nSlots);
-      // fAccepted and fRejected could be different than 0 if this is not the
-      // first event-loop run using this filter
-      std::fill(fAccepted.begin(), fAccepted.end(), 0);
-      std::fill(fRejected.begin(), fRejected.end(), 0);
-   }
+   TFilter(const TFilter &) = delete;
+   TFilter &operator=(const TFilter &) = delete;
 
    bool CheckFilters(unsigned int slot, Long64_t entry) final
    {
@@ -430,15 +480,18 @@ public:
    }
 
    template <int... S>
-   bool CheckFilterHelper(unsigned int slot, Long64_t entry, ROOT::Internal::TDFTraitsUtils::TStaticSeq<S...>)
+   bool CheckFilterHelper(unsigned int slot, Long64_t entry, TDFInternal::StaticSeq<S...>)
    {
       return fFilter(std::get<S>(fValues[slot]).Get(entry)...);
+      // silence "unused parameter" warnings in gcc
+      (void)slot;
+      (void)entry;
    }
 
-   void BuildReaderValues(TTreeReader &r, unsigned int slot) final
+   void InitSlot(TTreeReader *r, unsigned int slot) final
    {
-      ROOT::Internal::InitTDFValues(slot, fValues[slot], r, fBranches, fTmpBranches, fImplPtr->GetBookedBranches(),
-                                    BranchTypes_t(), TypeInd_t());
+      TDFInternal::InitTDFValues(slot, fValues[slot], r, fBranches, fTmpBranches, fImplPtr->GetBookedBranches(),
+                                 TypeInd_t());
    }
 
    // recursive chain of `Report`s
@@ -453,15 +506,38 @@ public:
    void StopProcessing()
    {
       ++fNStopsReceived;
-      if (fNStopsReceived == fNChildren) fPrevData.StopProcessing();
+      if (fNStopsReceived == fNChildren)
+         fPrevData.StopProcessing();
+   }
+
+   void IncrChildrenCount()
+   {
+      ++fNChildren;
+      // propagate "children activation" upstream. named filters do the propagation via `TriggerChildrenCount`.
+      if (fNChildren == 1 && fName.empty())
+         fPrevData.IncrChildrenCount();
+   }
+
+   void TriggerChildrenCount() final
+   {
+      assert(!fName.empty()); // this method is to only be called on named filters
+      fPrevData.IncrChildrenCount();
+   }
+
+   void ResetReportCount()
+   {
+      assert(!fName.empty()); // this method is to only be called on named filters
+      // fAccepted and fRejected could be different than 0 if this is not the first event-loop run using this filter
+      std::fill(fAccepted.begin(), fAccepted.end(), 0);
+      std::fill(fRejected.begin(), fRejected.end(), 0);
    }
 };
 
-class TDataFrameRangeBase {
+class TRangeBase {
 protected:
-   TDataFrameImpl *fImplPtr; ///< A raw pointer to the TDataFrameImpl at the root of this functional graph. It is only
-                             /// guaranteed to contain a valid address during an event loop.
-   BranchNames_t fTmpBranches;
+   TLoopManager *fImplPtr; ///< A raw pointer to the TLoopManager at the root of this functional graph. It is only
+                           /// guaranteed to contain a valid address during an event loop.
+   ColumnNames_t fTmpBranches;
    unsigned int fStart;
    unsigned int fStop;
    unsigned int fStride;
@@ -470,36 +546,49 @@ protected:
    ULong64_t fNProcessedEntries{0};
    unsigned int fNChildren{0};      ///< Number of nodes of the functional graph hanging from this object
    unsigned int fNStopsReceived{0}; ///< Number of times that a children node signaled to stop processing entries.
+   bool fHasStopped{false};         ///< True if the end of the range has been reached
+   const unsigned int fNSlots;      ///< Number of thread slots used by this node, inherited from parent node.
 
 public:
-   TDataFrameRangeBase(TDataFrameImpl *implPtr, const BranchNames_t &tmpBranches, unsigned int start, unsigned int stop,
-                       unsigned int stride);
-   virtual ~TDataFrameRangeBase() {}
-   TDataFrameImpl *GetImplPtr() const;
-   BranchNames_t GetTmpBranches() const;
+   TRangeBase(TLoopManager *implPtr, const ColumnNames_t &tmpBranches, unsigned int start, unsigned int stop,
+              unsigned int stride, const unsigned int nSlots);
+   TRangeBase &operator=(const TRangeBase &) = delete;
+   virtual ~TRangeBase() = default;
+
+   TLoopManager *GetImplPtr() const;
+   ColumnNames_t GetTmpBranches() const;
    virtual bool CheckFilters(unsigned int slot, Long64_t entry) = 0;
    virtual void Report() const = 0;
    virtual void PartialReport() const = 0;
-   void IncrChildrenCount() { ++fNChildren; }
+   virtual void IncrChildrenCount() = 0;
    virtual void StopProcessing() = 0;
+   void ResetChildrenCount()
+   {
+      fNChildren = 0;
+      fNStopsReceived = 0;
+   }
+   unsigned int GetNSlots() const { return fNSlots; }
 };
 
 template <typename PrevData>
-class TDataFrameRange final : public TDataFrameRangeBase {
+class TRange final : public TRangeBase {
    PrevData &fPrevData;
 
 public:
-   TDataFrameRange(unsigned int start, unsigned int stop, unsigned int stride, PrevData &pd)
-      : TDataFrameRangeBase(pd.GetImplPtr(), pd.GetTmpBranches(), start, stop, stride), fPrevData(pd)
+   TRange(unsigned int start, unsigned int stop, unsigned int stride, PrevData &pd)
+      : TRangeBase(pd.GetImplPtr(), pd.GetTmpBranches(), start, stop, stride, pd.GetNSlots()), fPrevData(pd)
    {
    }
 
-   TDataFrameRange(const TDataFrameRange &) = delete;
+   TRange(const TRange &) = delete;
+   TRange &operator=(const TRange &) = delete;
 
    /// Ranges act as filters when it comes to selecting entries that downstream nodes should process
    bool CheckFilters(unsigned int slot, Long64_t entry) final
    {
-      if (entry != fLastCheckedEntry) {
+      if (fHasStopped) {
+         return false;
+      } else if (entry != fLastCheckedEntry) {
          if (!fPrevData.CheckFilters(slot, entry)) {
             // a filter upstream returned false, cache the result
             fLastResult = false;
@@ -511,7 +600,10 @@ public:
                fLastResult = false;
             else
                fLastResult = true;
-            if (fNProcessedEntries == fStop) fPrevData.StopProcessing();
+            if (fNProcessedEntries == fStop) {
+               fHasStopped = true;
+               fPrevData.StopProcessing();
+            }
          }
          fLastCheckedEntry = entry;
       }
@@ -519,7 +611,7 @@ public:
    }
 
    // recursive chain of `Report`s
-   // TDataFrameRange simply forwards these calls to the previous node
+   // TRange simply forwards these calls to the previous node
    void Report() const final { fPrevData.PartialReport(); }
 
    void PartialReport() const final { fPrevData.PartialReport(); }
@@ -527,21 +619,32 @@ public:
    void StopProcessing()
    {
       ++fNStopsReceived;
-      if (fNStopsReceived == fNChildren) fPrevData.StopProcessing();
+      if (fNStopsReceived == fNChildren && !fHasStopped)
+         fPrevData.StopProcessing();
+   }
+
+   void IncrChildrenCount()
+   {
+      ++fNChildren;
+      // propagate "children activation" upstream
+      if (fNChildren == 1)
+         fPrevData.IncrChildrenCount();
    }
 };
 
-} // end NS ROOT::Detail
+} // namespace TDF
+} // namespace Detail
 } // namespace ROOT
 
 // method implementations
 template <typename T>
-void ROOT::Internal::TDataFrameValue<T>::SetTmpColumn(unsigned int slot, ROOT::Detail::TDataFrameBranchBase *tmpColumn)
+void ROOT::Internal::TDF::TColumnValue<T>::SetTmpColumn(unsigned int slot,
+                                                        ROOT::Detail::TDF::TCustomColumnBase *tmpColumn)
 {
    Reset();
    fTmpColumn = tmpColumn;
    if (tmpColumn->GetTypeId() != typeid(T))
-      throw std::runtime_error(std::string("TDataFrameValue: type specified is ") + typeid(T).name() +
+      throw std::runtime_error(std::string("TColumnValue: type specified is ") + typeid(T).name() +
                                " but temporary column has type " + tmpColumn->GetTypeId().name());
    fValuePtr = static_cast<T *>(tmpColumn->GetValuePtr(slot));
    fSlot = slot;
@@ -552,9 +655,10 @@ void ROOT::Internal::TDataFrameValue<T>::SetTmpColumn(unsigned int slot, ROOT::D
 // (have both branches inside functions and have a pointer to
 // the branch to be executed)
 template <typename T>
-template <typename U, typename std::enable_if<
-                         std::is_same<typename ROOT::Internal::TDataFrameValue<U>::ProxyParam_t, U>::value, int>::type>
-T &ROOT::Internal::TDataFrameValue<T>::Get(Long64_t entry)
+template <typename U,
+          typename std::enable_if<std::is_same<typename ROOT::Internal::TDF::TColumnValue<U>::ProxyParam_t, U>::value,
+                                  int>::type>
+T &ROOT::Internal::TDF::TColumnValue<T>::Get(Long64_t entry)
 {
    if (fReaderValue) {
       return *(fReaderValue->Get());

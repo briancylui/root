@@ -1,9 +1,71 @@
 # JSROOT changelog
 
+## Changes in dev
+1. Provide shape parameters in TGeo tooltips
+2. Let inspect selected TGeoNode
+3. Change in JSROOT.draw functionality. Now valid painter instance can be only obtained via call-back
+   function - forth argument of JSROOT.draw() function. 
+4. Refactor JSROOT scripts structure - extract histograms and hierarchy painters into separate scripts 
+5. Use latest three.js r86 with improved Projector and CanvasRenderer
+   Still use own SVGRenderer which supported direct text dump
+6. Provide text info when geometry drawing takes too long 
+7. Preliminary support of TEfficiency
+8. Automatic title positioning of vertical axis when fTitleOffset==0
+9. Optionally use openui5 for GUI functionality - like Menu creation.
+   On the long run will completely replace jquery-ui widgets
+10. In all sources specify "use strict" derictive, fix several connected errors.   
+
+
+## Changes in 5.2.0
+1. Basic JSROOT functionality can be used in Node.js:
+       var jsroot = require("path/to/JSRootCore.js");
+   One could parse ROOT JSON, read binary ROOT files (local and remote) and produce SVG.
+2. Implement dropping of TTree object on the geometry drawing.
+   This automatically invokes extract_geo_tracks() function, which
+   should extract TGeoTracks from provided TTree.
+   Example can be found in demo/alice_esd.js and in api.htm.
+3. Implement projection of geometry on given plane.
+   One could reuse drawing of geometry in other div (should be drawn with main option).
+   In control GUI one could change position of the projection plane
+4. On of the TGeo drawing can be assigned as main. When same object drawn next time,
+   its drawing will be derived from the main. Useful for geometry projections.
+   Also all tracks and hits will be imported from main drawing.
+5. Let change background color of geo drawing.
+6. One can change web browser title, providing &title="any string" in URL.
+7. Introduce event status line, which is similar to ROOT TCanvas.
+   Shown information similar to output in tooltip.
+   One can enable both tooltips and status line at the same time.
+8. Introduce JSROOT.GEO.build function to create three.js model for
+   any supported TGeo class. Such model can be inserted in any three.js scene
+   independent from normal JSROOT drawings.
+9. Improve rendering of geometries with transparency. Use EVE approach, when transparent
+   objects rendered after opaque and without writing depth buffer. Provide different
+   methods to produce render order for transparent objects.
+10. Let specify initial zoom factor for geometry like opt=zoom50.
+11. Support also TPolyMarker3D class in geo painter.
+12. Implement TGeoScaledShape.
+13. Limit complexity of composite shape. If it has too many components, only most left is used.
+14. When produce canvas or pad screenshot, render 3D objects with SVGRenderer.
+    Allows to combine 2D and 3D objects in same PNG image
+15. Improve MathJax.js output. It scales correctly in Firefox, makes correct alignment
+    and works significantly faster.
+16. When creating image in SVG format, correctly convert url("#id") references
+17. Use latest three.js r85
+18. Fix 'transpXY' URL parameter handling - it was used as opacity, but opacity=1-transparency
+
+
+## Changes in 5.1.2
+1. Fix - support newest TFormula in TF1 (#127)
+2. Fix - ignore NaN value in saved TF1 buffer
+3. Fix - correctly treat transparency in geo painter
+4. Fix - disable useFontCache for SVG mathjax output
+5. Fix - produce PNG image for objects with special symbols in names
+
+
 ## Changes in 5.1.1
 1. Fix - invoke callback in JSROOT.draw() at proper time
 2. Fix - support TGeoHMatrix, produced after GDML conversion
-3. Fix - support also TGeoScale and TGeoGenTrans matrixes
+3. Fix - support also TGeoScale and TGeoGenTrans matrices
 4. Fix - update histograms with all provided functions (#125)
 
 
@@ -170,7 +232,7 @@
 3. Let set default geo colors as TGeoManager::DefaultColors() does
 4. Let use original ROOT macros to configure visibility of geometry volumes. Like:
      &file=files/alice2.root&item=Geometry;1&opt=macro:macros/geomAlice.C
-   One can set default colors or colors/transperency for selected volumes.
+   One can set default colors or colors/transparency for selected volumes.
    Also volume, selected for drawing in the macro, will be used in the JSROOT
 5. Support drawing of TH2Poly class with 'col' and 'lego' options
 6. Implement 'CONT', 'ARR' and 'SURF' draw options for TH2 class
@@ -647,7 +709,7 @@
    in ROOT repository
 
 ### March 2014
-1. Introduce JSROOT.TBuffer class, which plays similar role
+1. Introduce TBuffer class, which plays similar role
    as TBuffer in native ROOT I/O. Simplifies I/O logic,
    reduce duplication of code in many places, fix errors.
    Main advantage - one could try to keep code synchronous with C++.

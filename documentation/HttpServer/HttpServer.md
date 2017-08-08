@@ -14,7 +14,7 @@ To start the http server, at any time, create an instance of the [THttpServer](h
 
 This will start a [civetweb](https://github.com/civetweb/civetweb)-based http server on the port 8080. Then one should be able to open the address "http://localhost:8080" in any modern browser (Firefox, Chrome, Opera, Safari, IE11) and browse objects created in application. By default, the server can access files, canvases, and histograms via the gROOT pointer. All those objects can be displayed with JSROOT graphics.
 
-There is a [server snapshot](https://root.cern/js/latest/httpserver.C/?layout=simple&item=Canvases/c1) of running macro [tutorials/http/httpserver.C](https://github.com/root-mirror/root/blob/master/tutorials/http/httpserver.C) from ROOT tutorials.
+There is a [server snapshot](https://root.cern/js/latest/httpserver.C/?layout=simple&item=Canvases/c1) of running macro [tutorials/http/httpserver.C](https://github.com/root-project/root/blob/master/tutorials/http/httpserver.C) from ROOT tutorials.
 
 One could specify several options when creating http server. They could be add as additional URL parameters to the constructor arguments like:
 
@@ -33,6 +33,16 @@ If necessary, one could bind http server to specific IP address like:
 
     new THttpServer("http:192.168.1.17:8080")
 
+One also can provide extra arguments for THttpServer itself 
+
+   - readonly, ro   - use server in read-only mode (default)
+   - readwrite, rw  - use server in read-write mode
+   - global         - let scan global directories for canvases and files (default)
+   - noglobal       - disable scan of global directories 
+
+Example:
+
+    new THttpServer("http:8080;ro;noglobal")
 
 
 ## Registering objects
@@ -83,8 +93,7 @@ string to the icon name to let browser show command as extra button. In last cas
 
     serv->Hide("/DoSomething");
 
-One can find example of command interface usage in [tutorials/http/httpcontrol.C](https://github.com/root-mirror/root/blob/master/tutorials/http/httpcontrol.C) macro.
-
+One can find example of command interface usage in [tutorials/http/httpcontrol.C](https://github.com/root-project/root/blob/master/tutorials/http/httpcontrol.C) macro.
 
 
 ## Configuring user access
